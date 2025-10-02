@@ -1,0 +1,10 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include setup.cfg
+recursive-include GPSat *.py
+recursive-include configs *.json
+recursive-include data *.csv *.h5 *.txt
+exclude examples/*
+exclude tests/*
+exclude docs/*
