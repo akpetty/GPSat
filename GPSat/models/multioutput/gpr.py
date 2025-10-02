@@ -6,8 +6,8 @@ from gpflow.logdensities import multivariate_normal
 from gpflow.mean_functions import MeanFunction, Zero
 from check_shapes import inherit_check_shapes
 import tensorflow as tf
-from likelihoods import LinearModelLikelihood, NonlinearModelLikelihood, ForwardModelLikelihood
-from utils import add_likelihood_noise_cov, multioutput_conditional
+from .likelihoods import LinearModelLikelihood, NonlinearModelLikelihood, ForwardModelLikelihood
+from .utils import add_likelihood_noise_cov, multioutput_conditional
 from typing import Union, Optional
 
 

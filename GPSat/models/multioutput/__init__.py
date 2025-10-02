@@ -1,1 +1,1 @@
-from utils import ForwardModel, LinearForwardModel
+from .utils import ForwardModel, LinearForwardModel

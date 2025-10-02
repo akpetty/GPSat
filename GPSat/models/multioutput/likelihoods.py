@@ -4,7 +4,7 @@ import gpflow
 from gpflow.likelihoods import Likelihood, MonteCarloLikelihood
 from gpflow.utilities.parameter_or_function import prepare_parameter_or_function
 from check_shapes import check_shapes, inherit_check_shapes
-from utils import multivariate_gaussian_log_density, ForwardModel, LinearForwardModel
+from .utils import multivariate_gaussian_log_density, ForwardModel, LinearForwardModel
 from abc import ABC, abstractmethod
 from typing import Union
 
