@@ -274,16 +274,31 @@ def smooth_hyperparameters(result_file: str,
             x, y = [row_df[c].values for c in xy_dims]
             vals = row_df[val_col].values
 
-            if smooth_config.get("max", None) is not None:
-                vals[vals > smooth_config["max"]] = smooth_config["max"]
+            # Resolve min/max (support per-component lists for e.g. lengthscales [x(m), y(m), time(days)])
+            _min = smooth_config.get("min", None)
+            _max = smooth_config.get("max", None)
+            if isinstance(_min, (list, np.ndarray)) and dim_cols and len(_min) > 0:
+                comp_idx = int(row[dim_cols[-1]]) if dim_cols else 0
+                comp_idx = min(comp_idx, len(_min) - 1)
+                _min = _min[comp_idx]
+            if isinstance(_max, (list, np.ndarray)) and dim_cols and len(_max) > 0:
+                comp_idx = int(row[dim_cols[-1]]) if dim_cols else 0
+                comp_idx = min(comp_idx, len(_max) - 1)
+                _max = _max[comp_idx]
 
-            if smooth_config.get("min", None) is not None:
-                vals[vals < smooth_config["min"]] = smooth_config["min"]
+            if _max is not None:
+                vals[vals > _max] = _max
+            if _min is not None:
+                vals[vals < _min] = _min
 
             # l_x, l_y = smooth_config.l_x, smooth_config.l_y
             l_x, l_y = smooth_config["l_x"], smooth_config["l_y"]
 
             smoothed_hyperparameter_field = gaussian_2d_weight(x0, y0, x, y, l_x, l_y, vals)
+            if _min is not None:
+                smoothed_hyperparameter_field = np.maximum(smoothed_hyperparameter_field, _min)
+            if _max is not None:
+                smoothed_hyperparameter_field = np.minimum(smoothed_hyperparameter_field, _max)
             row_df[val_col] = smoothed_hyperparameter_field
 
             # create a new tmp dataframe with just val, x, y cols - other dims to be added

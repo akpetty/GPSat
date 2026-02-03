@@ -3,6 +3,7 @@ venv/
 .configs/
 __pycache__/
 logs/
+slurm_output/
 
 notebooks/review_raw_data.ipynb
 
