@@ -4,7 +4,7 @@ Combine monthly IS2_interp_test_petty_YYYY-MM-DD.nc files into a single cleaned 
 
 - Looks in data_dir for subdirs named {run_string}_{YYYYMMDD}_{version_string} (e.g. run_30days_smap_20181215_v01), finds the NC file(s) in each, and concatenates along the time dimension. Saves combined NetCDF and browse images in data_dir by default.
 - Adds grid-cell area from NSIDC0771 (e.g. NSIDC0771_CellArea_PS_N25km_v1.1.nc).
-- Adds middle-day (15th) SIC from CDR: path is .../monthly/final/v6/ ; script adds year and finds daily file in that folder.
+- Adds middle-day (15th) SIC from CDR: path is .../daily/final/v6 ; script adds year and finds daily file in that folder.
 - All inputs are assumed to be on the same 2D grid (no regridding or padding).
 - NetCDF metadata follows gen_IS2SITMOGR4_V4.py conventions.
 - Requires NSIDC-0780 region mask (sea_ice_region_surface_mask); masks out CAA (value 12) in ice thickness, volume, and uncertainty only.
@@ -32,7 +32,7 @@ from netCDF4 import Dataset as nc4, date2num
 
 # Hardcoded paths (ADAPT)
 CELL_AREA_PATH = "/panfs/ccds02/home/aapetty/nobackup_symlink/Data/Other/NSIDC0771_CellArea_PS_N25km_v1.1.nc"
-CDR_CONC_PATH = "/panfs/ccds02/home/aapetty/nobackup_symlink/Data/ICECONC/CDR/monthly/final/v6/"
+CDR_CONC_PATH = "/panfs/ccds02/home/aapetty/nobackup_symlink/Data/ICECONC/CDR/daily/final/v6"
 REGION_MASK_PATH = os.path.join(os.path.dirname(CELL_AREA_PATH), "NSIDC-0780_SeaIceRegions_PS-N25km_v1.0.nc")
 # NSIDC-0780 sea_ice_region_surface_mask: 12 = Canadian Archipelago (CAA); we mask out CAA in output
 CAA_REGION_INDEX = 12
@@ -152,7 +152,7 @@ def load_cdr_sic_middle_day(cdr_conc_path, year, month):
     """
     Load SIC for the middle day (15th) of the month from daily files.
     Path: {cdr_conc_path}/{year}/, file matching *YYYYMM15*.nc or similar.
-    CDR path should be .../CDR/monthly/final/v6/ ; script appends the year folder.
+    CDR path should be .../CDR/daily/final/v6 ; script appends the year folder.
     """
     year_str = str(year)
     mon_str = "{:02d}".format(month)

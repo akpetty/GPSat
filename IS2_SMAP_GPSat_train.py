@@ -62,7 +62,7 @@ import re
 import h5py
 h5py._errors.silence_errors()
 # Import local modules
-from extra_funcs import read_IS2SITMOGR4, along_track_preprocess, bin_to_IS2, cdr_preprocess_nh
+from extra_funcs import read_IS2SITMOGR4, along_track_preprocess, bin_to_IS2, cdr_preprocess_nh, load_sic_data_for_date
 
 # Configure TensorFlow to handle GPU/CPU gracefully
 import tensorflow as tf
@@ -356,59 +356,6 @@ def load_smap_data_for_date(date_str, IS2, config=None):
         empty_df = pd.DataFrame(columns=['x', 'y', 'ice_thickness', 'time'])
         empty_gridded = xr.Dataset()
         return empty_df, empty_gridded
-
-
-def load_sic_data_for_date(date_str, IS2, config=None):
-    """
-    Load CDR SIC for a date and create ice-edge guide: values 0 where SIC < sic_cutoff (0.15).
-    Returns dataframe with column config['val_col'] (e.g. total_freeboard, snow_depth) and 0s at low SIC.
-    Default: load from local config['sic_base_path']/YYYY/seaice_conc_daily_nh_*.nc.
-    Optional backup: set config['sic_use_s3_fallback']=True to fall back to NOAA CDR on S3 when local not found.
-    """
-    val_col = config.get('val_col', 'ice_thickness') if config else 'ice_thickness'
-    sic_cutoff = config.get('sic_cutoff', 0.15) if config else 0.15
-    coarsen_factor = config.get('sic_coarsen_factor', 2) if config else 2
-    year_str = date_str[:4]
-    month_str = date_str[5:7]
-    day_str = date_str[8:10]
-    date_compact = date_str.replace('-', '')
-    fileset = None
-    # Default: load from local CDR daily path (e.g. Data/ICECONC/CDR/daily/final/v6/YYYY/...)
-    sic_base = config.get('sic_base_path') if config else None
-    if sic_base and os.path.isdir(sic_base):
-        local_pattern = os.path.join(sic_base, year_str, f'seaice_conc_daily_nh_{date_compact}*.nc')
-        local_files = sorted(glob.glob(local_pattern))
-        if local_files:
-            fileset = local_files
-    # Optional backup: S3 (NOAA CDR). Enable by setting config['sic_use_s3_fallback'] = True.
-    if not fileset and config and config.get('sic_use_s3_fallback'):
-        s3 = s3fs.S3FileSystem(anon=True)
-        s3path_NH = f's3://noaa-cdr-sea-ice-concentration-pds/data/final/north/daily/{year_str}/seaice_conc_daily_nh_{date_compact}*_f17_v04r00.nc'
-        remote_files = s3.glob(s3path_NH)
-        if remote_files:
-            fileset = [s3.open(f) for f in remote_files]
-    if not fileset:
-        return pd.DataFrame(columns=['x', 'y', val_col, 'time']), xr.Dataset()
-    try:
-        CDR_NH_daily = xr.open_mfdataset(fileset, engine='h5netcdf', preprocess=lambda x: cdr_preprocess_nh(x, IS2)).cdr_seaice_conc
-        CDR_NH_daily = CDR_NH_daily.isel(time=0).squeeze()
-        if coarsen_factor > 1:
-            CDR_NH_daily = CDR_NH_daily.isel(x=slice(None, None, coarsen_factor), y=slice(None, None, coarsen_factor))
-        x_mesh, y_mesh = np.meshgrid(CDR_NH_daily.x.values, CDR_NH_daily.y.values)
-        low_conc_mask = CDR_NH_daily.values < sic_cutoff
-        low_conc_zeroes = np.where(low_conc_mask, 0.0, np.nan)
-        low_conc_zeroes = low_conc_zeroes[~np.isnan(low_conc_zeroes)]
-        sic_data = pd.DataFrame({
-            'x': x_mesh[low_conc_mask].flatten(),
-            'y': y_mesh[low_conc_mask].flatten(),
-            val_col: low_conc_zeroes,
-            'time': pd.to_datetime(CDR_NH_daily.time.values)
-        })
-        sic_data_gridded = bin_to_IS2(sic_data, IS2, val_col=val_col)
-        return sic_data, sic_data_gridded
-    except Exception as e:
-        print(f'Error loading SIC for {date_str}: {e}')
-        return pd.DataFrame(columns=['x', 'y', val_col, 'time']), xr.Dataset()
 
 
 def load_data_around_target_date(config=None, IS2=None, plus_smap=False, plus_sic=False):
@@ -885,8 +832,8 @@ def main(num_days,
         'val_col': val_col,
         'sic_cutoff': 0.15,
         'sic_coarsen_factor': 2,
-        'sic_base_path': '/panfs/ccds02/home/aapetty/nobackup_symlink/Data/ICECONC/CDR/daily/final/v6',  # local CDR daily SIC (default when --sic true)
-        # 'sic_use_s3_fallback': False,  # set True to fall back to NOAA CDR on S3 when local file not found
+        'sic_base_path': '/panfs/ccds02/home/aapetty/nobackup_symlink/Data/ICECONC/CDR/daily/final/v6',  # local CDR daily SIC
+        'sic_use_s3_fallback': False,  # use local only; set True to fall back to NOAA CDR on S3 when local file not found
         'sic_use_prediction_day_only': sic_use_prediction_day_only,
         'smap_thickness_min': 0.0,
         'smap_thickness_max': 0.5,
@@ -899,8 +846,8 @@ def main(num_days,
         'is2_gridded_base_path': '/explore/nobackup/people/aapetty/IS2thickness/rel007/run_v4/final_data_gridded/',
         'N_subsample': 1,
         'noise_std': 0.3,
-        'expert_spacing': 300_000,
-        'training_radius': 500_000,
+        'expert_spacing': 200_000,
+        'training_radius': 400_000,
         'inference_radius': 500_000,
         'model_type': 'GPflowSGPRModel', #oi_modes = ['GPflowGPRModel', 'GPflowSGPRModel', 'GPflowSVGPModel', 'sklearnGPRModel', 'GPflowVFFModel', 'GPflowASVGPModel']
         'pred_spacing': 25_000,
@@ -1512,6 +1459,13 @@ def main(num_days,
         print("No SMAP/SIC data available")
         smap_data_df = pd.DataFrame()
 
+    # Require SIC data when --sic true (SIC-only mode); exit with error if none loaded
+    if plus_sic and not plus_smap and len(smap_data_df) == 0:
+        print("ERROR: SIC was requested (--sic true) but no SIC data was loaded.")
+        print("  Check: sic_base_path exists and contains YYYY/*YYYYMMDD*.nc files for the target date.")
+        print("  sic_base_path: {}".format(config.get('sic_base_path')))
+        sys.exit(1)
+
     along_track_data_df = along_track_data.to_dataframe().dropna().reset_index()
     along_track_data_df['time'] = along_track_data_df.time.values.astype("datetime64[D]").astype(float)
     along_track_data_df = along_track_data_df.astype('float64')
@@ -1641,7 +1595,7 @@ def main(num_days,
         model["constraints"] = {
             "lengthscales": {
                 "low": [10000, 10000, 1.0],   # 10 km min for x, y (m); 1 day for time
-                "high": [1_000_000, 1_000_000, 30]  # 1000 km max for x, y (m); 30 days for time (half of +/-30 day window)
+                "high": [1000_000, 1000_000, 50]  # allow ~500–1000 km in central Arctic
             },
             "likelihood_variance": {
                 "low": 1e-2,  # Increased minimum likelihood variance
@@ -1765,8 +1719,8 @@ def main(num_days,
             # Lengthscale bounds: table stores values in scaled space (physical / coords_scale).
             # Derive scaled min/max from model coords_scale so they stay correct if grid/scale changes.
             coords_scale = np.atleast_1d(model["init_params"]["coords_scale"]).flatten()
-            ls_min_phys = [10_000, 10_000, 1.0]      # 10 km x,y; 1 day (physical)
-            ls_max_phys = [1_000_000, 1_000_000, 30]  # 1000 km x,y; 30 days (physical; half of +/-30 day window)
+            ls_min_phys = [10_000, 10_000, 1.0]    # 10 km x,y; 1 day (physical)
+            ls_max_phys = [500_000, 500_000, 50]  # 500 km x,y; 50 days (physical)
             ls_min_scaled = [ls_min_phys[i] / coords_scale[i] for i in range(min(3, len(coords_scale)))]
             ls_max_scaled = [ls_max_phys[i] / coords_scale[i] for i in range(min(3, len(coords_scale)))]
             smooth_config = {
@@ -1852,6 +1806,7 @@ def main(num_days,
         print("13.5 Plotting smoothed hyperparameters...")
         try:
             # plot and save results
+            # Use full range (0.0/1.0) to avoid cut-offs, same as unsmoothed
             fig = plot_hyper_parameters(dfs,
                             coords_col=oi_config[0]['data']['coords_col'],  # ['x', 'y', 't']
                             row_select=None,
@@ -1861,8 +1816,8 @@ def main(num_days,
                             plot_template=plot_template,
                             plots_per_row=3,
                             suptitle="smoothed hyper params",
-                            qvmin=0.01,
-                            qvmax=0.99)
+                            qvmin=0.0,  # Show full range (min)
+                            qvmax=1.0)  # Show full range (max)
             plt.tight_layout()
             plt.savefig(save_dir+'/GPSat_smoothed_weights_'+config['target_date']+'.png', dpi=300, facecolor="white", bbox_inches='tight')
             plt.show()

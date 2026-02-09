@@ -6,13 +6,15 @@ Copied from the all-season notebooks
 """
 
 # Regular Python library imports 
+import os
+import glob
 import xarray as xr 
 import numpy as np
 import pandas as pd
 import pyproj
 import scipy.interpolate
 import matplotlib.pyplot as plt
-import glob
+import s3fs
 from datetime import datetime
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -79,6 +81,9 @@ def along_track_preprocess(ds, data_variable='ice_thickness'):
         ds = getattr(ds, data_variable)
     else:
         ds = ds.ice_thickness  # fallback for thickness-only datasets
+    # Ensure the DataArray name matches data_variable so to_dataframe() column matches obs_col (e.g. snow_depth)
+    if ds.name != data_variable:
+        ds = ds.rename(data_variable)
     #ds['time'] = ds.time + pd.to_datetime('1980-01-06T00:00:00.000000')
     ref_time = np.datetime64("1980-01-06T00:00:00")
     ds['time'] = ref_time + ds['time'].astype("timedelta64[s]")
@@ -89,39 +94,110 @@ def along_track_preprocess(ds, data_variable='ice_thickness'):
     return ds
  
 
-def cdr_preprocess_nh(ds, IS2):
+def cdr_preprocess_nh(ds, IS2, date_str=None):
     """
     Preprocess CDR data and align with IS2 coordinates.
-    
-    Parameters:
-    -----------
-    ds : xarray.Dataset
-        Input CDR dataset
-    IS2 : xarray.Dataset
-        IS2 dataset to align coordinates with
-        
-    Returns:
-    --------
-    xarray.DataArray
-        Preprocessed CDR data aligned with IS2 coordinates
+    Handles both legacy CDR (xgrid/ygrid/tdim) and sic_psn25-style files (x/y or other dim names).
+    date_str: optional 'YYYY-MM-DD' used when the file has no time dimension (e.g. sic_psn25_*).
     """
-    # Rename coordinates to match IS2
-    ds = ds.rename({'xgrid':'x','ygrid':'y','tdim':'time'})
-    ds = ds.set_coords(["y", "x"])
-    
+    all_names = set(ds.dims) | set(ds.coords) | set(getattr(ds, "data_vars", ds).keys() if hasattr(ds, "data_vars") else set())
+    # Rename only coordinates that exist (sic_psn25_* may already use x, y or different names)
+    renames = {}
+    if "xgrid" in all_names and "x" not in all_names:
+        renames["xgrid"] = "x"
+    if "ygrid" in all_names and "y" not in all_names:
+        renames["ygrid"] = "y"
+    if "tdim" in all_names and "time" not in all_names:
+        renames["tdim"] = "time"
+    if renames:
+        ds = ds.rename(renames)
+    # Ensure we have x, y (some files use different dim names)
+    for old, new in [("ni", "x"), ("nj", "y"), ("xc", "x"), ("yc", "y")]:
+        if old in ds.dims and new not in ds.dims:
+            ds = ds.rename({old: new})
+    coord_list = [c for c in ["y", "x"] if c in ds.dims or c in ds.coords]
+    if coord_list:
+        ds = ds.set_coords(coord_list)
+    # Ensure time dimension exists (some SIC files e.g. sic_psn25_* are 2D only)
+    if "time" not in ds.coords and "time" not in ds.dims:
+        import pandas as pd
+        t = pd.to_datetime(date_str) if date_str else pd.Timestamp.now()
+        ds = ds.expand_dims("time").assign_coords(time=[t])
     # Align coordinates with IS2
     ds = ds.assign_coords(
         lat=IS2.lat,
         lon=IS2.lon,
-        time=ds.time.compute()
+        time=ds.time.compute() if hasattr(ds.time, "compute") else ds.time
     )
-    
-    # Return the appropriate variable based on what's available
-    if 'cdr_seaice_conc_monthly' in ds.data_vars:
-        return ds.cdr_seaice_conc_monthly
-    else: 
-        return ds.cdr_seaice_conc
-    
+    # Concentration variable: use same names as combine_monthly_netcdf (cdr_seaice_conc, sea_ice_conc, sic, etc.)
+    conc_var = None
+    for vname in ("cdr_seaice_conc", "cdr_seaice_conc_monthly", "sea_ice_conc", "seaice_conc_cdr", "concentration", "sic"):
+        if vname in ds.data_vars:
+            conc_var = vname
+            break
+    if conc_var is None:
+        raise ValueError("CDR dataset has no concentration variable (tried cdr_seaice_conc, sea_ice_conc, sic, concentration)")
+    if conc_var != "cdr_seaice_conc":
+        ds = ds.rename({conc_var: "cdr_seaice_conc"})
+    out = ds.cdr_seaice_conc
+    # CDR/sic_psn25 grid is top-down; flip y to match NSIDC/IS2 orientation (same as combine_monthly_netcdf np.flipud)
+    if "y" in out.dims:
+        out = out.isel(y=slice(None, None, -1))
+    return out
+
+
+def load_sic_data_for_date(date_str, IS2, config=None):
+    """
+    Load CDR SIC for a date and create ice-edge guide: values 0 where SIC < sic_cutoff (0.15).
+    Returns dataframe with column = config['val_col'] (ice_thickness, freeboard, or snow_depth).
+    Loads from config['sic_base_path']/YYYY/*YYYYMMDD*.nc. Optional: config['sic_use_s3_fallback']=True for S3.
+    Shared by IS2_GPSat_train and IS2_SMAP_GPSat_train for consistent SIC reading.
+    """
+    val_col = config.get('val_col', 'ice_thickness') if config else 'ice_thickness'
+    sic_cutoff = config.get('sic_cutoff', 0.15) if config else 0.15
+    coarsen_factor = config.get('sic_coarsen_factor', 2) if config else 2
+    year_str = date_str[:4]
+    date_compact = date_str.replace('-', '')
+    fileset = None
+    sic_base = config.get('sic_base_path') if config else None
+    if sic_base and os.path.isdir(sic_base):
+        local_pattern = os.path.join(sic_base, year_str, f'*{date_compact}*.nc')
+        local_files = sorted(glob.glob(local_pattern))
+        if local_files:
+            fileset = local_files
+    if not fileset and config and config.get('sic_use_s3_fallback'):
+        try:
+            s3 = s3fs.S3FileSystem(anon=True)
+            s3path_NH = f's3://noaa-cdr-sea-ice-concentration-pds/data/final/north/daily/{year_str}/seaice_conc_daily_nh_{date_compact}*_f17_v04r00.nc'
+            remote_files = s3.glob(s3path_NH)
+            if remote_files:
+                fileset = [s3.open(f) for f in remote_files]
+        except Exception as e:
+            print(f'SIC S3 fallback failed for {date_str}: {e}')
+    if not fileset:
+        return pd.DataFrame(columns=['x', 'y', val_col, 'time']), xr.Dataset()
+    try:
+        CDR_NH_daily = xr.open_mfdataset(fileset, engine='h5netcdf', preprocess=lambda x: cdr_preprocess_nh(x, IS2, date_str=date_str)).cdr_seaice_conc
+        CDR_NH_daily = CDR_NH_daily.isel(time=0).squeeze()
+        if coarsen_factor > 1:
+            CDR_NH_daily = CDR_NH_daily.isel(x=slice(None, None, coarsen_factor), y=slice(None, None, coarsen_factor))
+        x_mesh, y_mesh = np.meshgrid(CDR_NH_daily.x.values, CDR_NH_daily.y.values)
+        low_conc_mask = CDR_NH_daily.values < sic_cutoff
+        low_conc_zeroes = np.where(low_conc_mask, 0.0, np.nan)
+        low_conc_zeroes = low_conc_zeroes[~np.isnan(low_conc_zeroes)]
+        sic_data = pd.DataFrame({
+            'x': x_mesh[low_conc_mask].flatten(),
+            'y': y_mesh[low_conc_mask].flatten(),
+            val_col: low_conc_zeroes,
+            'time': pd.to_datetime(CDR_NH_daily.time.values)
+        })
+        sic_data_gridded = bin_to_IS2(sic_data, IS2, val_col=val_col)
+        return sic_data, sic_data_gridded
+    except Exception as e:
+        print(f'Error loading SIC for {date_str}: {e}')
+        return pd.DataFrame(columns=['x', 'y', val_col, 'time']), xr.Dataset()
+
+
 def read_IS2SITMOGR4(data_type='zarr-s3', version='V3', local_data_path="./data/IS2SITMOGR4/", 
                      zarr_path='s3://icesat-2-sea-ice-us-west-2/IS2SITMOGR4_V3/IS2SITMOGR4_V3_201811-202404.zarr',
                      netcdf_s3_path='s3://icesat-2-sea-ice-us-west-2/IS2SITMOGR4_V3/netcdf/', 

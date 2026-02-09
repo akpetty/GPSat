@@ -4,6 +4,9 @@ venv/
 __pycache__/
 logs/
 slurm_output/
+output/
+results/
+to_delete/
 
 notebooks/review_raw_data.ipynb
 

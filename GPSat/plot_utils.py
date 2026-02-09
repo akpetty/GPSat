@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
-import seaborn as sns
+#import seaborn as sns
 from scipy.stats import skew, kurtosis
 
 import matplotlib.pyplot as plt

@@ -8,16 +8,15 @@ pandas==1.5.3
 
 # for now: prevent installing tensorflow >= 2.16.0,
 # which requires installing tf-keras separately
-tensorflow[and-cuda]>=2.14.0,<2.16.0;platform_system == "Linux"
+tensorflow[and-cuda]>=2.14.0,<2.16.0;platform_system == "Linux" and platform_machine=="x86_64"
 
-# tensorflow-probability 0.24.0 requires tensorflow 2.16
-tensorflow-probability<0.24.0
+# Linux ARM64 (aarch64)
+tensorflow==2.14.0;platform_system == "Linux" and platform_machine=="aarch64"
 
 # macos Intel
 tensorflow==2.14.0;platform_system == "Darwin" and platform_machine=="x86_64"
 # macos Apple Silicon
 tensorflow-macos==2.12.0;platform_system == "Darwin" and platform_machine=="arm64"
-
 
 # system specific tensorflow install, using environment markers (https://peps.python.org/pep-0508/#environment-markers)
 gpflow==2.6.3; platform_system == "Darwin" and platform_machine=="arm64"

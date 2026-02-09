@@ -2167,8 +2167,8 @@ class DataLoader:
         out = xr.combine_by_coords(da_list)
         return out
 
-    @deprecated
     @staticmethod
+    @deprecated
     def bin_data(
             df,
             x_range=None,
